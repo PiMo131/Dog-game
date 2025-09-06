@@ -2,7 +2,8 @@
 <html lang="nl">
 <head>
   <meta charset="UTF-8" />
-  <title>Hond zoekt geldzak – Procedureel doolhof</title>
+  <title>Hond zoekt geldzak – Procedureel doolhof (Swipe & Keyboard)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
       --tile: 25px;   /* tegelgrootte */
@@ -28,6 +29,8 @@
       box-shadow: 0 8px 30px rgba(0,0,0,.15);
       overflow: hidden;
       outline: none;
+      /* Belangrijk voor swipe: voorkom scroll/zoom bij vegen */
+      touch-action: none;
     }
     #score, #help {
       position: absolute;
@@ -38,6 +41,7 @@
       border-radius: 8px;
       font-weight: 700;
       font-size: 14px;
+      user-select: none;
     }
     #score { top: 8px; }
     #help  { top: 42px; font-weight: 500; }
@@ -58,15 +62,13 @@
       user-select: none;
       transition: transform 80ms ease;
     }
-
     .entity img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain; /* zodat het niet vervormt */
-  pointer-events: none; /* geen klikselectie */
-  user-select: none;
-  }
-
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      pointer-events: none;
+      user-select: none;
+    }
     .dog { z-index: 3; }
     .treasure { z-index: 2; }
     #gridOverlay {
@@ -79,22 +81,39 @@
       pointer-events: none;
       opacity: .25;
     }
+
+    /* Optionele hint voor mobiel */
+    #mobileHint {
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 6px 10px;
+      font-size: 13px;
+      background: rgba(255,255,255,.9);
+      border-radius: 8px;
+      display: none;
+      z-index: 6;
+      user-select: none;
+    }
+    .is-touch #mobileHint { display: block; }
   </style>
 </head>
 <body>
   <div id="game" tabindex="0" aria-label="Hond zoekt geldzak – doolhof">
     <div id="score">Score: 0</div>
-    <div id="help">Pijltjestoetsen/WASD: bewegen • Bereik 💰</div>
+    <div id="help">Desktop: pijltjestoetsen/WASD • Mobiel: swipe</div>
+    <div id="mobileHint">Veeg om te bewegen • Tik om focus te geven</div>
 
     <!-- Doolhof-tegels komen hier dynamisch -->
     <div id="gridOverlay" aria-hidden="true"></div>
 
     <!-- Entiteiten -->
-<div id="dog" class="entity dog">
-  <img src="dog.png" alt="Hond" />
-</div>
-<div id="treasure" class="entity treasure">💰</div>
-
+    <div id="dog" class="entity dog">
+      <img src="dog.png" alt="Hond" />
+    </div>
+    <div id="treasure" class="entity treasure">💰</div>
+  </div>
 
   <script>
     // --- Basis spelconfig ---
@@ -107,13 +126,17 @@
     const treasureEl = document.getElementById('treasure');
     const scoreEl = document.getElementById('score');
 
-    // Alleen geldzak
     const TREASURE_EMOJI = '💰';
+
+    // Detectie voor mobiel/touch
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0 || window.matchMedia('(pointer: coarse)').matches;
+    if (isTouchDevice) {
+      document.documentElement.classList.add('is-touch');
+    }
 
     // --- Grid helpers ---
     const inside = (x,y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
 
-    // 4-richtingen
     const DIR4 = [
       {dx: 1, dy: 0},
       {dx:-1, dy: 0},
@@ -121,7 +144,6 @@
       {dx: 0, dy:-1},
     ];
 
-    // 8-richtingen (voor "raakt niet meer dan 4")
     const DIR8 = [
       {dx:-1,dy:-1},{dx:0,dy:-1},{dx:1,dy:-1},
       {dx:-1,dy: 0},            {dx:1,dy: 0},
@@ -132,13 +154,11 @@
     const grid = Array.from({length: ROWS}, () => Array(COLS).fill(0));
 
     // --- Procedurele doolhof-generatie ---
-    // Start linksboven (0,0) als pad
     function generateMaze() {
       grid.forEach(row => row.fill(0));
       const start = {x: 0, y: 0};
       grid[start.y][start.x] = 1;
 
-      // Frontier: buren van bestaande paden die nog leeg zijn
       const key = (x,y) => `${x},${y}`;
       const inFrontier = new Set();
       const addFrontierOf = (x,y) => {
@@ -161,40 +181,30 @@
         return cnt;
       }
 
-      // Groei zolang er geldige kandidaten zijn
-      let safety = COLS*ROWS*10; // failsafe
+      let safety = COLS*ROWS*10;
       while (inFrontier.size > 0 && safety-- > 0) {
-        // Kies een willekeurige kandidaat
         const arr = Array.from(inFrontier);
         const pick = arr[Math.floor(Math.random()*arr.length)];
         const [cx, cy] = pick.split(',').map(Number);
 
-        // Check regel: nieuwe tegel mag niet meer dan 4 andere (8-neighbors) raken
         const touches = neighborCount8(cx, cy);
         if (touches <= 4) {
-          // Plaats pad
           grid[cy][cx] = 1;
           inFrontier.delete(pick);
-
-          // Voeg nieuwe frontier-posities toe
           addFrontierOf(cx, cy);
-
-          // Verwijder frontier entries die geen lege cellen meer zijn
           for (const k of Array.from(inFrontier)) {
             const [fx, fy] = k.split(',').map(Number);
             if (grid[fy][fx] !== 0) inFrontier.delete(k);
           }
         } else {
-          // Niet toegestaan -> verwijder deze kandidaat
           inFrontier.delete(pick);
         }
       }
-      // Rest blijft 0 (=muren)
+      // Rest blijft muren (0)
     }
 
-    // --- Render muren op basis van grid ---
+    // --- Render muren ---
     function renderWalls() {
-      // Verwijder oude muren (indien herstart)
       document.querySelectorAll('.wall').forEach(w => w.remove());
       for (let y = 0; y < ROWS; y++) {
         for (let x = 0; x < COLS; x++) {
@@ -203,6 +213,8 @@
             w.className = 'wall';
             w.style.left = (x*TILE) + 'px';
             w.style.top  = (y*TILE) + 'px';
+            w.style.width = TILE + 'px';
+            w.style.height = TILE + 'px';
             game.appendChild(w);
           }
         }
@@ -211,7 +223,7 @@
 
     // --- Spelstatus & entiteiten ---
     let score = 0;
-    let dog = { x: 0, y: 0 }; // start linksboven
+    let dog = { x: 0, y: 0 };
 
     const toTransform = (x, y) => `translate(${x*TILE}px, ${y*TILE}px)`;
 
@@ -220,13 +232,12 @@
     }
 
     function randomEmptyCell() {
-      // Kies een willekeurige pad-tegel (grid=1), niet gelijk aan hond
       let x, y, tries = 0;
       do {
         x = Math.floor(Math.random() * COLS);
         y = Math.floor(Math.random() * ROWS);
         tries++;
-        if (tries > COLS*ROWS*5) break; // failsafe
+        if (tries > COLS*ROWS*5) break;
       } while (grid[y][x] !== 1 || (x === dog.x && y === dog.y));
       return { x, y };
     }
@@ -246,10 +257,9 @@
       }
     }
 
-    // --- Besturing ---
-    function canWalk(x,y) {
-      return inside(x,y) && grid[y][x] === 1;
-    }
+    // --- Bewegen ---
+    function canWalk(x,y) { return inside(x,y) && grid[y][x] === 1; }
+
     function tryMove(dx, dy) {
       const nx = dog.x + dx;
       const ny = dog.y + dy;
@@ -260,15 +270,65 @@
       }
     }
 
-    game.addEventListener('keydown', (e) => {
+    // Keyboard (desktop)
+    function onKey(e) {
       const k = e.key;
       if (k === 'ArrowUp' || k === 'w' || k === 'W')      { e.preventDefault(); tryMove(0,-1); }
       if (k === 'ArrowDown' || k === 's' || k === 'S')    { e.preventDefault(); tryMove(0, 1); }
       if (k === 'ArrowLeft' || k === 'a' || k === 'A')    { e.preventDefault(); tryMove(-1,0); }
       if (k === 'ArrowRight' || k === 'd' || k === 'D')   { e.preventDefault(); tryMove(1, 0); }
-    });
+      if (k === 'r' || k === 'R')                         { e.preventDefault(); initGame(); }
+    }
 
-    game.addEventListener('click', () => game.focus());
+    // Swipe (mobiel)
+    let touchStartX = 0, touchStartY = 0;
+    const SWIPE_THRESHOLD = 24; // pixels; iets kleiner dan 1 tegel voor soepeler gevoel
+
+    function onTouchStart(ev) {
+      const t = ev.touches ? ev.touches[0] : ev;
+      touchStartX = t.clientX;
+      touchStartY = t.clientY;
+    }
+
+    function onTouchMove(ev) {
+      // voorkomen dat de pagina gaat scrollen tijdens swipe
+      ev.preventDefault();
+    }
+
+    function onTouchEnd(ev) {
+      const t = ev.changedTouches ? ev.changedTouches[0] : ev;
+      const dx = t.clientX - touchStartX;
+      const dy = t.clientY - touchStartY;
+
+      // beslis richting op basis van grootste afstand
+      if (Math.abs(dx) < SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD) return;
+
+      if (Math.abs(dx) > Math.abs(dy)) {
+        // horizontale swipe
+        if (dx > 0) tryMove(1, 0);   // rechts
+        else        tryMove(-1, 0);  // links
+      } else {
+        // verticale swipe
+        if (dy > 0) tryMove(0, 1);   // omlaag
+        else        tryMove(0,-1);   // omhoog
+      }
+    }
+
+    function enableControls() {
+      // Altijd keyboard; swipe alleen op touch
+      document.addEventListener('keydown', onKey);
+
+      if (isTouchDevice) {
+        // Gebruik {passive:false} zodat we preventDefault mogen doen
+        game.addEventListener('touchstart', onTouchStart, { passive: false });
+        game.addEventListener('touchmove',  onTouchMove,  { passive: false });
+        game.addEventListener('touchend',   onTouchEnd,   { passive: false });
+
+        // Ondersteuning voor muis-drag op hybride apparaten
+        game.addEventListener('mousedown', onTouchStart);
+        window.addEventListener('mouseup', onTouchEnd);
+      }
+    }
 
     // --- Init spel ---
     function initGame() {
@@ -277,9 +337,8 @@
       generateMaze();
       renderWalls();
 
-      // Startpositie moet op pad liggen; zo niet, zoek dichtstbijzijnde pad
+      // Startpositie: zorg dat hond op een pad staat
       if (grid[dog.y][dog.x] !== 1) {
-        // simpele zoekactie over het raster
         outer:
         for (let y=0; y<ROWS; y++) {
           for (let x=0; x<COLS; x++) {
@@ -295,14 +354,10 @@
       game.focus();
     }
 
-    initGame();
+    game.addEventListener('click', () => game.focus());
 
-    // (Optioneel) druk 'r' om het doolhof opnieuw te genereren
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'r' || e.key === 'R') {
-        initGame();
-      }
-    });
+    enableControls();
+    initGame();
   </script>
 </body>
 </html>
