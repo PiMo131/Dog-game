@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <title>Hond zoekt geldzak – Procedureel doolhof</title>
+  <style>
+    :root {
+      --tile: 25px;   /* tegelgrootte */
+      --cols: 24;     /* 24 * 25 = 600px breed */
+      --rows: 16;     /* 16 * 25 = 400px hoog */
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #a8e6a3;
+      font-family: system-ui, Arial, sans-serif;
+    }
+    #game {
+      position: relative;
+      width: calc(var(--cols) * var(--tile));
+      height: calc(var(--rows) * var(--tile));
+      background: #cfeecb;
+      border: 3px solid #2f3b2f;
+      border-radius: 10px;
+      box-shadow: 0 8px 30px rgba(0,0,0,.15);
+      overflow: hidden;
+      outline: none;
+    }
+    #score, #help {
+      position: absolute;
+      left: 8px;
+      z-index: 5;
+      background: rgba(255,255,255,.9);
+      padding: 6px 10px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 14px;
+    }
+    #score { top: 8px; }
+    #help  { top: 42px; font-weight: 500; }
+    .wall {
+      position: absolute;
+      width: var(--tile);
+      height: var(--tile);
+      background: #2e6b3a;      /* muren */
+      border: 1px solid rgba(0,0,0,.08);
+    }
+    .entity {
+      position: absolute;
+      width: var(--tile);
+      height: var(--tile);
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      user-select: none;
+      transition: transform 80ms ease;
+    }
+
+    .entity img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* zodat het niet vervormt */
+  pointer-events: none; /* geen klikselectie */
+  user-select: none;
+  }
+
+    .dog { z-index: 3; }
+    .treasure { z-index: 2; }
+    #gridOverlay {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(to right, rgba(0,0,0,.06) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(0,0,0,.06) 1px, transparent 1px);
+      background-size: var(--tile) var(--tile);
+      pointer-events: none;
+      opacity: .25;
+    }
+  </style>
+</head>
+<body>
+  <div id="game" tabindex="0" aria-label="Hond zoekt geldzak – doolhof">
+    <div id="score">Score: 0</div>
+    <div id="help">Pijltjestoetsen/WASD: bewegen • Bereik 💰</div>
+
+    <!-- Doolhof-tegels komen hier dynamisch -->
+    <div id="gridOverlay" aria-hidden="true"></div>
+
+    <!-- Entiteiten -->
+<div id="dog" class="entity dog">
+  <img src="dog.png" alt="Hond" />
+</div>
+<div id="treasure" class="entity treasure">💰</div>
+
+
+  <script>
+    // --- Basis spelconfig ---
+    const TILE = 25;
+    const COLS = 24;
+    const ROWS = 16;
+
+    const game = document.getElementById('game');
+    const dogEl = document.getElementById('dog');
+    const treasureEl = document.getElementById('treasure');
+    const scoreEl = document.getElementById('score');
+
+    // Alleen geldzak
+    const TREASURE_EMOJI = '💰';
+
+    // --- Grid helpers ---
+    const inside = (x,y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
+
+    // 4-richtingen
+    const DIR4 = [
+      {dx: 1, dy: 0},
+      {dx:-1, dy: 0},
+      {dx: 0, dy: 1},
+      {dx: 0, dy:-1},
+    ];
+
+    // 8-richtingen (voor "raakt niet meer dan 4")
+    const DIR8 = [
+      {dx:-1,dy:-1},{dx:0,dy:-1},{dx:1,dy:-1},
+      {dx:-1,dy: 0},            {dx:1,dy: 0},
+      {dx:-1,dy: 1},{dx:0,dy: 1},{dx:1,dy: 1},
+    ];
+
+    // Grid: 0 = muur (ongevuld), 1 = pad
+    const grid = Array.from({length: ROWS}, () => Array(COLS).fill(0));
+
+    // --- Procedurele doolhof-generatie ---
+    // Start linksboven (0,0) als pad
+    function generateMaze() {
+      grid.forEach(row => row.fill(0));
+      const start = {x: 0, y: 0};
+      grid[start.y][start.x] = 1;
+
+      // Frontier: buren van bestaande paden die nog leeg zijn
+      const key = (x,y) => `${x},${y}`;
+      const inFrontier = new Set();
+      const addFrontierOf = (x,y) => {
+        for (const d of DIR4) {
+          const nx = x + d.dx, ny = y + d.dy;
+          if (inside(nx,ny) && grid[ny][nx] === 0) {
+            inFrontier.add(key(nx,ny));
+          }
+        }
+      };
+
+      addFrontierOf(start.x, start.y);
+
+      function neighborCount8(x,y) {
+        let cnt = 0;
+        for (const d of DIR8) {
+          const nx = x + d.dx, ny = y + d.dy;
+          if (inside(nx,ny) && grid[ny][nx] === 1) cnt++;
+        }
+        return cnt;
+      }
+
+      // Groei zolang er geldige kandidaten zijn
+      let safety = COLS*ROWS*10; // failsafe
+      while (inFrontier.size > 0 && safety-- > 0) {
+        // Kies een willekeurige kandidaat
+        const arr = Array.from(inFrontier);
+        const pick = arr[Math.floor(Math.random()*arr.length)];
+        const [cx, cy] = pick.split(',').map(Number);
+
+        // Check regel: nieuwe tegel mag niet meer dan 4 andere (8-neighbors) raken
+        const touches = neighborCount8(cx, cy);
+        if (touches <= 4) {
+          // Plaats pad
+          grid[cy][cx] = 1;
+          inFrontier.delete(pick);
+
+          // Voeg nieuwe frontier-posities toe
+          addFrontierOf(cx, cy);
+
+          // Verwijder frontier entries die geen lege cellen meer zijn
+          for (const k of Array.from(inFrontier)) {
+            const [fx, fy] = k.split(',').map(Number);
+            if (grid[fy][fx] !== 0) inFrontier.delete(k);
+          }
+        } else {
+          // Niet toegestaan -> verwijder deze kandidaat
+          inFrontier.delete(pick);
+        }
+      }
+      // Rest blijft 0 (=muren)
+    }
+
+    // --- Render muren op basis van grid ---
+    function renderWalls() {
+      // Verwijder oude muren (indien herstart)
+      document.querySelectorAll('.wall').forEach(w => w.remove());
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          if (grid[y][x] === 0) {
+            const w = document.createElement('div');
+            w.className = 'wall';
+            w.style.left = (x*TILE) + 'px';
+            w.style.top  = (y*TILE) + 'px';
+            game.appendChild(w);
+          }
+        }
+      }
+    }
+
+    // --- Spelstatus & entiteiten ---
+    let score = 0;
+    let dog = { x: 0, y: 0 }; // start linksboven
+
+    const toTransform = (x, y) => `translate(${x*TILE}px, ${y*TILE}px)`;
+
+    function placeDog() {
+      dogEl.style.transform = toTransform(dog.x, dog.y);
+    }
+
+    function randomEmptyCell() {
+      // Kies een willekeurige pad-tegel (grid=1), niet gelijk aan hond
+      let x, y, tries = 0;
+      do {
+        x = Math.floor(Math.random() * COLS);
+        y = Math.floor(Math.random() * ROWS);
+        tries++;
+        if (tries > COLS*ROWS*5) break; // failsafe
+      } while (grid[y][x] !== 1 || (x === dog.x && y === dog.y));
+      return { x, y };
+    }
+
+    let treasure = { x: 0, y: 0 };
+    function placeTreasure() {
+      treasureEl.textContent = TREASURE_EMOJI;
+      treasureEl.style.transform = toTransform(treasure.x, treasure.y);
+    }
+
+    function collectIfOnTreasure() {
+      if (dog.x === treasure.x && dog.y === treasure.y) {
+        score++;
+        scoreEl.textContent = `Score: ${score}`;
+        treasure = randomEmptyCell();
+        placeTreasure();
+      }
+    }
+
+    // --- Besturing ---
+    function canWalk(x,y) {
+      return inside(x,y) && grid[y][x] === 1;
+    }
+    function tryMove(dx, dy) {
+      const nx = dog.x + dx;
+      const ny = dog.y + dy;
+      if (canWalk(nx, ny)) {
+        dog.x = nx; dog.y = ny;
+        placeDog();
+        collectIfOnTreasure();
+      }
+    }
+
+    game.addEventListener('keydown', (e) => {
+      const k = e.key;
+      if (k === 'ArrowUp' || k === 'w' || k === 'W')      { e.preventDefault(); tryMove(0,-1); }
+      if (k === 'ArrowDown' || k === 's' || k === 'S')    { e.preventDefault(); tryMove(0, 1); }
+      if (k === 'ArrowLeft' || k === 'a' || k === 'A')    { e.preventDefault(); tryMove(-1,0); }
+      if (k === 'ArrowRight' || k === 'd' || k === 'D')   { e.preventDefault(); tryMove(1, 0); }
+    });
+
+    game.addEventListener('click', () => game.focus());
+
+    // --- Init spel ---
+    function initGame() {
+      score = 0;
+      scoreEl.textContent = 'Score: 0';
+      generateMaze();
+      renderWalls();
+
+      // Startpositie moet op pad liggen; zo niet, zoek dichtstbijzijnde pad
+      if (grid[dog.y][dog.x] !== 1) {
+        // simpele zoekactie over het raster
+        outer:
+        for (let y=0; y<ROWS; y++) {
+          for (let x=0; x<COLS; x++) {
+            if (grid[y][x] === 1) { dog.x = x; dog.y = y; break outer; }
+          }
+        }
+      }
+      placeDog();
+
+      treasure = randomEmptyCell();
+      placeTreasure();
+
+      game.focus();
+    }
+
+    initGame();
+
+    // (Optioneel) druk 'r' om het doolhof opnieuw te genereren
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'r' || e.key === 'R') {
+        initGame();
+      }
+    });
+  </script>
+</body>
+</html>
